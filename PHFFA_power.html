@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>IO-550N Fuel Flow Rechner (75% Power - RICH)</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; background: #f4f4f4; }
+    label, input, select { display: block; margin: 0.5em 0; }
+    .result, canvas { margin-top: 1.5em; padding: 1em; background: #fff; border: 1px solid #ccc; }
+    input[type=number] { width: 100px; }
+  </style>
+</head>
+<body>
+  <h1>IO-550N Fuel Flow Rechner – 75% Power (Best Power)</h1>
+
+  <label for="rpm">RPM:</label>
+  <select id="rpm"></select>
+
+  <label for="mp">MP (inHg):</label>
+  <input type="number" id="mp" step="0.1" value="23.0">
+
+  <label for="temp">OAT (°C):</label>
+  <input type="number" id="temp" value="" readonly>
+
+  <label for="altitude">GPS-Höhe (ft):</label>
+  <input type="number" id="altitude" readonly>
+
+  <button onclick="calculate()">Berechne Fuel Flow</button>
+
+  <div class="result" id="output">Ergebnis erscheint hier...</div>
+
+  <canvas id="chart" width="400" height="200"></canvas>
+
+  <script>
+    const data = {
+      2200: { 23.5: 13.0, 22.0: 11.0 },
+      2300: { 23.2: 13.9, 21.9: 11.9, 20.5: 10.0 },
+      2400: { 24.5: 15.9, 23.2: 13.9, 21.9: 11.9, 20.5: 10.0 },
+      2500: { 25.5: 15.8, 24.4: 14.1, 23.1: 12.1, 21.7: 10.1 },
+      2600: { 26.6: 16.8, 25.0: 14.9, 23.5: 13.2 },
+      2700: { 27.5: 17.5, 26.0: 15.5, 24.5: 13.8 }
+    };
+
+    function interpolate(rpm, mp) {
+      const row = data[rpm];
+      if (!row) return null;
+      const mps = Object.keys(row).map(Number).sort((a, b) => a - b);
+      let lower = mps[0], upper = mps[mps.length - 1];
+      for (let i = 0; i < mps.length - 1; i++) {
+        if (mp >= mps[i] && mp <= mps[i + 1]) {
+          lower = mps[i]; upper = mps[i + 1]; break;
+        }
+      }
+      const fLow = row[lower], fHigh = row[upper];
+      return fLow + (mp - lower) * (fHigh - fLow) / (upper - lower);
+    }
+
+    function calculate() {
+      const rpm = parseInt(document.getElementById('rpm').value);
+      const mpRaw = parseFloat(document.getElementById('mp').value);
+      const temp = parseFloat(document.getElementById('temp').value);
+      const altitude = parseFloat(document.getElementById('altitude').value);
+
+      const isaTemp = 15 - 2 * (altitude / 1000);
+      const isaDev = temp - isaTemp;
+      const mpCorr = mpRaw + 0.4 * (isaDev / 10);
+
+      const fuelFlow = interpolate(rpm, mpCorr);
+      if (!fuelFlow) {
+        document.getElementById('output').innerHTML = "Keine Daten für diese MP/RPM Kombination.";
+        return;
+      }
+
+      const lph = fuelFlow * 3.785;
+      const pct = (fuelFlow / 16.0) * 75;
+      const bhp = (pct / 100) * 310;
+
+      document.getElementById('output').innerHTML = `
+        <strong>ISA-Abweichung:</strong> ${isaDev.toFixed(1)} °C<br>
+        <strong>Korrigierter MP:</strong> ${mpCorr.toFixed(2)} inHg<br><br>
+        <strong>Fuel Flow:</strong> ${fuelFlow.toFixed(2)} GPH / ${lph.toFixed(1)} L/h<br>
+        <strong>Leistung:</strong> ${bhp.toFixed(1)} PS (${pct.toFixed(1)} %)
+      `;
+
+      updateChart(mpCorr, fuelFlow, bhp);
+    }
+
+    function updateChart(mp, fuel, bhp) {
+      chart.data.labels.push(mp.toFixed(2));
+      chart.data.datasets[0].data.push(fuel);
+      chart.data.datasets[1].data.push(bhp);
+      chart.update();
+    }
+
+    const ctx = document.getElementById('chart').getContext('2d');
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          { label: 'Fuel Flow (GPH)', data: [], borderColor: 'blue', fill: false },
+          { label: 'Leistung (PS)', data: [], borderColor: 'green', fill: false }
+        ]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: { beginAtZero: false }
+        }
+      }
+    });
+
+    // Init: RPM Dropdown
+    const rpmSelect = document.getElementById('rpm');
+    for (let i = 2200; i <= 2700; i += 100) {
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.text = i;
+      rpmSelect.add(opt);
+    }
+
+    // GPS + Wetterdaten (Open-Meteo)
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(pos => {
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        const alt = pos.coords.altitude || 3000;
+        document.getElementById('altitude').value = alt.toFixed(0);
+
+        fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`)
+          .then(res => res.json())
+          .then(data => {
+            const t = data.current_weather.temperature;
+            document.getElementById('temp').value = t;
+          });
+      }, () => {
+        document.getElementById('altitude').value = 3000;
+        document.getElementById('temp').value = 15;
+      });
+    }
+  </script>
+</body>
+</html>
